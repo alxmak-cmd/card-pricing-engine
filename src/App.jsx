@@ -70,7 +70,7 @@ function generateInsights(inputs, results) {
   if (rec === "Blended") {
     insights.push({ icon: "◈", text: "Blended pricing offers simplicity while capturing adequate margin at current mix." });
   }
-  if (results.flat.marginPct < 0.15) {
+ if (results["Flat"].marginPct < 0.15) {
     insights.push({ icon: "◈", text: "Flat rate margin is thin — consider IC++ to reduce exposure to high-cost cards." });
   }
   if (insights.length === 0) {
