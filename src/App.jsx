@@ -116,9 +116,13 @@ function buildSensitivityData(inputs) {
     const inp = { ...inputs, pctCredit: pct };
     const bc = computeBlendedCost(inp);
     const flat = computeMargin(flatRevenue(inp), inp.monthlyVolume, bc);
-    const icpp = computeMargin(icppRevenue(inp), inp.monthlyVolume, bc);
     const blended = computeMargin(blendedRevenue(inp), inp.monthlyVolume, bc);
-    points.push({ pct, flat: flat.marginPct * 100, icpp: icpp.marginPct * 100, blended: blended.marginPct * 100 });
+    // IC++ margin % = markup / (interchange + markup) — the meaningful metric
+    // since revenue includes interchange passthrough which is a pure cost passthrough
+    const icppMarkupRevenue = inp.monthlyVolume * PRICING.icppMarkup;
+    const icppTotalRevenue = icppRevenue(inp);
+    const icppMarginPct = icppTotalRevenue > 0 ? icppMarkupRevenue / icppTotalRevenue * 100 : 0;
+    points.push({ pct, flat: flat.marginPct * 100, icpp: icppMarginPct, blended: blended.marginPct * 100 });
   }
   return points;
 }
