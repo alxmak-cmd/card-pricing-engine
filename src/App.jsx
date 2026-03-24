@@ -50,22 +50,58 @@ function recommendModel(inputs) {
   return "Blended";
 }
 
-function generateInsights(inputs, results) {
+// ── ENRICHED INSIGHTS ─────────────────────────────────────────────────────────
+
+function generateInsights(inputs, results, bc) {
   const insights = [];
-  if (inputs.pctCredit > 0.7)
-    insights.push("High credit mix increases interchange costs — flat-rate pricing absorbs this variability at the expense of margin.");
-  if (inputs.monthlyVolume > 1_000_000)
-    insights.push("At this volume scale, IC++ pricing aligns revenue directly to underlying interchange, improving margin predictability.");
-  if (inputs.pctInternational > 0.2)
-    insights.push("Cross-border volume adds ~1% cost uplift per transaction, introducing margin volatility across all models.");
-  if (inputs.avgTransaction < 20)
-    insights.push("Small average ticket size means per-transaction fixed fees represent a disproportionate share of total cost.");
-  if (results["Flat"].marginPct < 0.15)
-    insights.push("Flat rate margin is thin at this mix — consider IC++ to reduce exposure to high-cost card types.");
-  if (inputs.pctCredit < 0.5 && inputs.monthlyVolume > 500_000)
-    insights.push("Debit-heavy volume is a structural advantage — lower interchange costs improve margins across all pricing models.");
-  if (insights.length === 0)
-    insights.push("Merchant profile is well-balanced. Blended pricing offers simplicity without significant margin trade-off.");
+  const txCount = Math.round(inputs.monthlyVolume / inputs.avgTransaction);
+  const intlCostMonthly = inputs.monthlyVolume * inputs.pctInternational * COSTS.intlUplift;
+  const creditPremium = inputs.pctCredit * (COSTS.creditInterchange - COSTS.debitInterchange) * inputs.monthlyVolume;
+
+  if (inputs.pctCredit > 0.7) {
+    insights.push({
+      tag: "Card Mix",
+      text: `Credit-heavy mix adds ${fmt$(creditPremium)}/mo in interchange vs. an all-debit portfolio — flat-rate pricing absorbs this at the expense of margin.`,
+    });
+  }
+  if (inputs.monthlyVolume > 1_000_000) {
+    const icppVsBlended = results["IC++"].margin - results["Blended"].margin;
+    insights.push({
+      tag: "Volume",
+      text: `At ${fmtVolLabel(inputs.monthlyVolume)}/mo, IC++ ${icppVsBlended >= 0 ? `captures ${fmt$(Math.abs(icppVsBlended))} more margin` : `trails Blended by ${fmt$(Math.abs(icppVsBlended))}`} vs. Blended — interchange pass-through improves predictability at scale.`,
+    });
+  }
+  if (inputs.pctInternational > 0.2) {
+    insights.push({
+      tag: "Cross-Border",
+      text: `International transactions are costing ${fmt$(intlCostMonthly)}/mo in uplift fees — ${(inputs.pctInternational * 100).toFixed(0)}% cross-border exposure introduces margin volatility across all models.`,
+    });
+  }
+  if (inputs.avgTransaction < 20) {
+    const fixedFeeImpact = txCount * PRICING.flatFixed;
+    insights.push({
+      tag: "Ticket Size",
+      text: `With ${txCount.toLocaleString()} transactions at $${inputs.avgTransaction} avg, flat fixed fees alone add up to ${fmt$(fixedFeeImpact)}/mo — small-ticket volume is fee-sensitive.`,
+    });
+  }
+  if (results["Flat"].marginPct < 0.15) {
+    insights.push({
+      tag: "Risk",
+      text: `Flat rate margin is ${(results["Flat"].marginPct * 100).toFixed(1)}% — below the 15% threshold. IC++ would reduce exposure to high-cost card types and improve margin floor.`,
+    });
+  }
+  if (inputs.pctCredit < 0.5 && inputs.monthlyVolume > 500_000) {
+    insights.push({
+      tag: "Advantage",
+      text: `Debit-dominant mix (${Math.round((1 - inputs.pctCredit) * 100)}% debit) is a structural cost advantage — blended interchange of ${fmtPct(bc)} is well below the credit-heavy benchmark of ~2.4%.`,
+    });
+  }
+  if (insights.length === 0) {
+    insights.push({
+      tag: "Summary",
+      text: `Merchant profile is well-balanced. Blended pricing captures adequate margin at ${fmtPct(results["Blended"].marginPct)} without the operational overhead of IC++.`,
+    });
+  }
   return insights;
 }
 
@@ -84,13 +120,29 @@ function buildSensitivityData(inputs) {
   return points;
 }
 
+// ── COMPETITIVE BENCHMARKS ────────────────────────────────────────────────────
+
+// Rates reflect published 2025 pricing for mid-market merchants
+const COMPETITORS = [
+  { name: "Adyen",        model: "IC++", markup: 0.004, fixed: 0.13, note: "IC++ only; requires volume commitment" },
+  { name: "Braintree",    model: "Flat", rate: 0.0349,  fixed: 0.00, note: "No fixed fee; higher % rate" },
+  { name: "Square",       model: "Flat", rate: 0.029,   fixed: 0.30, note: "Online rate; card-present is 2.6%+$0.10" },
+  { name: "Checkout.com", model: "IC++", markup: 0.006, fixed: 0.00, note: "IC++ standard; negotiated for high vol" },
+];
+
+function computeCompetitorRevenue(comp, inputs) {
+  const txCount = inputs.monthlyVolume / inputs.avgTransaction;
+  if (comp.model === "IC++") return inputs.monthlyVolume * comp.markup + txCount * (comp.fixed || 0);
+  return inputs.monthlyVolume * comp.rate + txCount * comp.fixed;
+}
+
 // ── PRESETS ───────────────────────────────────────────────────────────────────
 
 const PRESETS = {
-  SaaS: { monthlyVolume: 5_000_000, avgTransaction: 50, pctCredit: 0.7, pctInternational: 0.1 },
+  SaaS:        { monthlyVolume: 5_000_000,  avgTransaction: 50, pctCredit: 0.70, pctInternational: 0.10 },
   Marketplace: { monthlyVolume: 10_000_000, avgTransaction: 35, pctCredit: 0.55, pctInternational: 0.25 },
-  Ecommerce: { monthlyVolume: 2_000_000, avgTransaction: 80, pctCredit: 0.85, pctInternational: 0.05 },
-  "High Debit": { monthlyVolume: 5_000_000, avgTransaction: 50, pctCredit: 0.4, pctInternational: 0.1 },
+  Ecommerce:   { monthlyVolume: 2_000_000,  avgTransaction: 80, pctCredit: 0.85, pctInternational: 0.05 },
+  "High Debit":{ monthlyVolume: 5_000_000,  avgTransaction: 50, pctCredit: 0.40, pctInternational: 0.10 },
 };
 
 const PRESET_DESCRIPTIONS = {
@@ -261,24 +313,16 @@ function SensitivityChart({ inputs }) {
   const w = 500, h = 190, padL = 42, padR = 16, padT = 16, padB = 32;
   const chartW = w - padL - padR;
   const chartH = h - padT - padB;
-
   const allVals = data.flatMap(d => [d.flat, d.icpp, d.blended]);
   const minVal = Math.floor(Math.min(...allVals)) - 2;
   const maxVal = Math.ceil(Math.max(...allVals)) + 2;
-
   const xScale = pct => padL + (pct / 1) * chartW;
   const yScale = val => padT + chartH - ((val - minVal) / (maxVal - minVal)) * chartH;
-
-  const makePath = (key) => {
-    return data.map((d, i) => `${i === 0 ? "M" : "L"}${xScale(d.pct)},${yScale(d[key])}`).join(" ");
-  };
-
+  const makePath = (key) => data.map((d, i) => `${i === 0 ? "M" : "L"}${xScale(d.pct)},${yScale(d[key])}`).join(" ");
   const xNow = xScale(currentPct);
   const nearest = data.reduce((a, b) => Math.abs(a.pct - currentPct) < Math.abs(b.pct - currentPct) ? a : b);
-
   const yTicks = 4;
   const yStep = (maxVal - minVal) / yTicks;
-
   return (
     <div>
       <div style={{ display: "flex", gap: "1.25rem", alignItems: "center", flexWrap: "wrap", marginBottom: "0.75rem" }}>
@@ -351,13 +395,333 @@ function exportResults(inputs, results, rec) {
   URL.revokeObjectURL(url);
 }
 
-// ── MODEL META ────────────────────────────────────────────────────────────────
+// ── SHARED COMPONENTS ─────────────────────────────────────────────────────────
 
 const MODEL_META = {
   "Flat":    { color: "#4f8ef7", label: "Flat Rate", desc: "Simple % + fixed fee per transaction" },
   "IC++":    { color: "#34c98a", label: "IC++",      desc: "Interchange pass-through + fixed markup" },
   "Blended": { color: "#9b7ff4", label: "Blended",   desc: "Balanced rate + fixed fee" },
 };
+
+function Panel({ children, style }) {
+  return (
+    <div style={{ background: "#16161a", border: "1px solid #1e1e28", borderRadius: "8px", padding: "1.25rem", ...style }}>
+      {children}
+    </div>
+  );
+}
+
+function SectionHeader({ label, right }) {
+  return (
+    <div style={{
+      fontSize: "0.68rem", fontWeight: 500, letterSpacing: "0.08em",
+      textTransform: "uppercase", color: "#55556a",
+      marginBottom: "1rem", paddingBottom: "0.75rem",
+      borderBottom: "1px solid #1e1e28",
+      display: "flex", justifyContent: "space-between", alignItems: "center",
+    }}>
+      <span>{label}</span>
+      {right && <span style={{ textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>{right}</span>}
+    </div>
+  );
+}
+
+// ── METHODOLOGY PANEL ─────────────────────────────────────────────────────────
+
+function MethodologyPanel({ inputs, results, rec }) {
+  const [open, setOpen] = useState(false);
+  const bc = computeBlendedCost(inputs);
+  const txCount = Math.round(inputs.monthlyVolume / inputs.avgTransaction);
+
+  const vol1M = inputs.monthlyVolume > 1_000_000;
+  const creditLow = inputs.pctCredit < 0.6;
+  const smallTicket = inputs.avgTransaction < 20;
+
+  let decisiveStep = 2; // default = blended
+  if (vol1M && creditLow) decisiveStep = 0;
+  else if (smallTicket) decisiveStep = 1;
+
+  const steps = [
+    {
+      label: "Step 1 — IC++ threshold",
+      desc: "IC++ outperforms when volume is high and credit mix is below 60% — interchange pass-through beats a flat markup at scale.",
+      formula: `Volume ${fmtVolLabel(inputs.monthlyVolume)} ${vol1M ? ">" : "≤"} $1M  ·  Credit ${Math.round(inputs.pctCredit * 100)}% ${creditLow ? "<" : "≥"} 60%`,
+      pass: vol1M && creditLow,
+      result: vol1M && creditLow
+        ? "✓ Both met → IC++ recommended"
+        : `✗ ${!vol1M ? "Volume below $1M" : "Credit mix ≥ 60%"} → skip`,
+      color: "#34c98a",
+    },
+    {
+      label: "Step 2 — Flat rate threshold",
+      desc: "Flat rate wins when ticket size is small — fixed per-transaction fees dominate costs and predictability matters more than rate.",
+      formula: `Avg transaction $${inputs.avgTransaction} ${smallTicket ? "<" : "≥"} $20`,
+      pass: smallTicket,
+      result: smallTicket
+        ? "✓ Small ticket → Flat Rate recommended"
+        : "✗ Ticket above threshold → skip",
+      color: "#4f8ef7",
+    },
+    {
+      label: "Step 3 — Default to Blended",
+      desc: "All other profiles use Blended — a balanced rate that captures adequate margin without interchange complexity.",
+      formula: `${fmtVolLabel(inputs.monthlyVolume)} × 2.50% + ${txCount.toLocaleString()} txns × $0.25`,
+      pass: decisiveStep === 2,
+      result: `= ${fmt$(results["Blended"].revenue)} revenue · ${fmtPct(results["Blended"].marginPct)} margin`,
+      color: "#9b7ff4",
+    },
+  ];
+
+  return (
+    <Panel>
+      {/* Clickable header */}
+      <button
+        onClick={() => setOpen(v => !v)}
+        style={{
+          width: "100%", background: "none", border: "none", padding: 0,
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          cursor: "pointer",
+        }}
+      >
+        <div style={{
+          fontSize: "0.68rem", fontWeight: 500, letterSpacing: "0.08em",
+          textTransform: "uppercase", color: "#55556a",
+          paddingBottom: "0.75rem", borderBottom: "1px solid #1e1e28",
+          width: "100%", textAlign: "left", display: "flex",
+          justifyContent: "space-between", alignItems: "center",
+          marginBottom: "0",
+        }}>
+          <span>How the recommendation is made</span>
+          <span style={{
+            fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.75rem",
+            color: "#3a3a4a", display: "inline-block",
+            transform: open ? "rotate(180deg)" : "rotate(0deg)",
+            transition: "transform 0.2s", marginLeft: "8px",
+          }}>▾</span>
+        </div>
+      </button>
+
+      {/* Collapsed state */}
+      {!open && (
+        <div style={{ fontSize: "0.78rem", color: "#55556a", lineHeight: 1.65, marginTop: "0.85rem" }}>
+          A rules-based decision tree evaluates volume, credit mix, and ticket size to select the highest-margin model.{" "}
+          <span
+            onClick={() => setOpen(true)}
+            style={{ color: "#4f8ef7", cursor: "pointer", textDecoration: "underline" }}
+          >Show methodology →</span>
+        </div>
+      )}
+
+      {/* Expanded state */}
+      {open && (
+        <div style={{ marginTop: "1rem" }}>
+          {/* Active recommendation callout */}
+          <div style={{
+            background: "#111116", border: "1px solid #2a2a38", borderRadius: "6px",
+            padding: "0.75rem 1rem", marginBottom: "1.25rem",
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+          }}>
+            <span style={{ fontSize: "0.74rem", color: "#55556a" }}>Current recommendation for this profile:</span>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+              <div style={{ width: 7, height: 7, borderRadius: "50%", background: MODEL_META[rec].color }} />
+              <span style={{ fontSize: "0.82rem", fontWeight: 600, color: "#f0f0f4" }}>{MODEL_META[rec].label}</span>
+            </div>
+          </div>
+
+          {/* Decision steps */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.85rem" }}>
+            {steps.map((step, i) => {
+              const isDecisive = i === decisiveStep;
+              const isDone = i < decisiveStep;
+              return (
+                <div key={i} style={{
+                  paddingLeft: "0.875rem",
+                  borderLeft: `2px solid ${isDecisive ? step.color : isDone ? "#2a2a38" : "#1e1e28"}`,
+                  opacity: i > decisiveStep ? 0.38 : 1,
+                  transition: "opacity 0.2s",
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.25rem" }}>
+                    <span style={{
+                      fontSize: "0.69rem", fontWeight: 600, letterSpacing: "0.04em",
+                      color: isDecisive ? step.color : "#55556a",
+                    }}>{step.label}</span>
+                    {isDecisive && (
+                      <span style={{
+                        fontSize: "0.58rem", padding: "1px 5px", borderRadius: "3px",
+                        background: `${step.color}18`, color: step.color,
+                        border: `1px solid ${step.color}40`,
+                        fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
+                      }}>decisive</span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: "0.73rem", color: "#55556a", marginBottom: "0.4rem", lineHeight: 1.55 }}>{step.desc}</div>
+                  <div style={{
+                    background: "#111116", borderRadius: "4px",
+                    padding: "0.5rem 0.75rem",
+                    fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.71rem",
+                    lineHeight: 1.9,
+                  }}>
+                    <div style={{ color: isDecisive ? "#c0c0d8" : "#55556a" }}>{step.formula}</div>
+                    <div style={{ color: isDecisive ? step.color : "#3a3a4a" }}>{step.result}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Cost constants reference */}
+          <div style={{ marginTop: "1.25rem", paddingTop: "1rem", borderTop: "1px solid #1e1e28" }}>
+            <div style={{ fontSize: "0.65rem", letterSpacing: "0.08em", textTransform: "uppercase", color: "#3a3a4a", marginBottom: "0.6rem" }}>
+              Interchange constants used in all calculations
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "0.35rem" }}>
+              {[
+                ["Debit interchange", "0.80%"],
+                ["Credit interchange", "2.20%"],
+                ["International uplift", "1.00%"],
+                ["Network fees", "0.15%"],
+                ["IC++ markup", "0.50%"],
+                ["Flat rate", "2.90% + $0.30"],
+                ["Blended rate", "2.50% + $0.25"],
+              ].map(([k, v]) => (
+                <div key={k} style={{
+                  display: "flex", justifyContent: "space-between",
+                  fontSize: "0.71rem", padding: "0.28rem 0.5rem",
+                  background: "#111116", borderRadius: "4px",
+                }}>
+                  <span style={{ color: "#55556a" }}>{k}</span>
+                  <span style={{ fontFamily: "'IBM Plex Mono', monospace", color: "#9090a8" }}>{v}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+// ── COMPETITIVE BENCHMARK ─────────────────────────────────────────────────────
+
+function CompetitiveBenchmark({ inputs, results }) {
+  const bc = computeBlendedCost(inputs);
+
+  // Find our engine's best margin and which model achieves it
+  const ourBestMargin = Math.max(...Object.values(results).map(r => r.margin));
+  const ourBestModel = Object.keys(results).find(k => results[k].margin === ourBestMargin);
+  const ourRevenue = results[ourBestModel].revenue;
+
+  // Build competitor rows
+  const compRows = COMPETITORS.map(comp => {
+    const revenue = computeCompetitorRevenue(comp, inputs);
+    const cost = inputs.monthlyVolume * bc;
+    const margin = revenue - cost;
+    const marginPct = revenue > 0 ? margin / revenue : 0;
+    return { ...comp, revenue, cost, margin, marginPct };
+  });
+
+  const allMargins = [ourBestMargin, ...compRows.map(r => r.margin)];
+  const maxMargin = Math.max(...allMargins.filter(m => m > 0));
+
+  const rateStr = (comp) => comp.model === "IC++"
+    ? `IC++ ${(comp.markup * 100).toFixed(2)}%${comp.fixed ? ` + $${comp.fixed.toFixed(2)}` : ""}`
+    : `${(comp.rate * 100).toFixed(2)}% + $${comp.fixed.toFixed(2)}`;
+
+  const ourRateStr = ourBestModel === "IC++" ? "IC++ 0.50%"
+    : ourBestModel === "Flat" ? "2.90% + $0.30"
+    : "2.50% + $0.25";
+
+  const ColHeader = ({ children }) => (
+    <th style={{
+      fontSize: "0.64rem", fontWeight: 500, letterSpacing: "0.07em",
+      textTransform: "uppercase", color: "#55556a", textAlign: "left",
+      padding: "0 0.75rem 0.6rem", borderBottom: "1px solid #1e1e28",
+      whiteSpace: "nowrap",
+    }}>{children}</th>
+  );
+
+  return (
+    <Panel>
+      <SectionHeader label="Competitive Benchmark" right="same merchant profile · published 2025 rates" />
+      <div style={{ fontSize: "0.74rem", color: "#55556a", marginBottom: "1rem", lineHeight: 1.65 }}>
+        How major processors compare at this volume and card mix. All rows use identical blended cost ({fmtPct(bc)}) — only the revenue model differs.
+      </div>
+
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.78rem" }}>
+          <thead>
+            <tr>
+              <ColHeader>Processor</ColHeader>
+              <ColHeader>Model</ColHeader>
+              <ColHeader>Rate structure</ColHeader>
+              <ColHeader>Revenue</ColHeader>
+              <ColHeader>Margin</ColHeader>
+              <ColHeader>Margin %</ColHeader>
+            </tr>
+          </thead>
+          <tbody>
+            {/* Engine row — always first */}
+            <tr style={{ background: "rgba(79,142,247,0.04)" }}>
+              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <div style={{ width: 7, height: 7, borderRadius: "50%", background: MODEL_META[ourBestModel].color, flexShrink: 0 }} />
+                  <span style={{ fontWeight: 600, color: "#f0f0f4", whiteSpace: "nowrap" }}>This engine</span>
+                  <span style={{
+                    fontSize: "0.58rem", background: "rgba(79,142,247,0.12)", color: "#4f8ef7",
+                    border: "1px solid rgba(79,142,247,0.25)", padding: "1px 5px",
+                    borderRadius: "3px", fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase",
+                  }}>optimal</span>
+                </div>
+              </td>
+              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22", color: "#9090a8" }}>{MODEL_META[ourBestModel].label}</td>
+              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.71rem", color: "#55556a" }}>{ourRateStr}</td>
+              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: "#9090a8" }}>{fmt$(ourRevenue)}</td>
+              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: "#34c98a" }}>
+                <div>{fmt$(ourBestMargin)}</div>
+                <div style={{ width: "72px", height: "2px", background: "#1e1e2a", borderRadius: "2px", marginTop: "5px" }}>
+                  <div style={{ width: `${maxMargin > 0 ? (ourBestMargin / maxMargin) * 100 : 0}%`, height: "100%", background: "#34c98a", borderRadius: "2px" }} />
+                </div>
+              </td>
+              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: "#34c98a" }}>
+                {fmtPct(ourBestMargin / ourRevenue)}
+              </td>
+            </tr>
+
+            {/* Competitor rows */}
+            {compRows.map((comp, i) => {
+              const isPos = comp.margin >= 0;
+              const barW = maxMargin > 0 ? Math.max(0, comp.margin / maxMargin) * 100 : 0;
+              const isLast = i === compRows.length - 1;
+              return (
+                <tr key={comp.name}>
+                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22" }}>
+                    <div style={{ fontWeight: 500, color: "#f0f0f4" }}>{comp.name}</div>
+                    <div style={{ fontSize: "0.67rem", color: "#3a3a4a", marginTop: "2px" }}>{comp.note}</div>
+                  </td>
+                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", color: "#9090a8" }}>{comp.model}</td>
+                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.71rem", color: "#55556a" }}>{rateStr(comp)}</td>
+                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: "#9090a8" }}>{fmt$(comp.revenue)}</td>
+                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: isPos ? "#9090a8" : "#f25f5c" }}>
+                    <div>{fmt$(comp.margin)}</div>
+                    <div style={{ width: "72px", height: "2px", background: "#1e1e2a", borderRadius: "2px", marginTop: "5px" }}>
+                      <div style={{ width: `${barW}%`, height: "100%", background: "#2a2a3a", borderRadius: "2px" }} />
+                    </div>
+                  </td>
+                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: isPos ? "#9090a8" : "#f25f5c" }}>
+                    {fmtPct(comp.marginPct)}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ marginTop: "0.85rem", paddingTop: "0.75rem", borderTop: "1px solid #1a1a22", fontSize: "0.67rem", color: "#3a3a4a", lineHeight: 1.6 }}>
+        Published pricing as of 2025. Adyen and Checkout.com require volume minimums; enterprise negotiated rates will differ.
+      </div>
+    </Panel>
+  );
+}
 
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
 
@@ -371,12 +735,12 @@ export default function App() {
 
   const bc = computeBlendedCost(inputs);
   const results = {
-    "Flat":    computeMargin(flatRevenue(inputs), inputs.monthlyVolume, bc),
-    "IC++":    computeMargin(icppRevenue(inputs), inputs.monthlyVolume, bc),
+    "Flat":    computeMargin(flatRevenue(inputs),    inputs.monthlyVolume, bc),
+    "IC++":    computeMargin(icppRevenue(inputs),    inputs.monthlyVolume, bc),
     "Blended": computeMargin(blendedRevenue(inputs), inputs.monthlyVolume, bc),
   };
   const rec = recommendModel(inputs);
-  const insights = generateInsights(inputs, results);
+  const insights = generateInsights(inputs, results, bc);
   const maxMargin = Math.max(...Object.values(results).map(r => Math.max(r.margin, 0)));
 
   const handleExport = () => {
@@ -384,6 +748,17 @@ export default function App() {
     setExported(true);
     setTimeout(() => setExported(false), 2000);
   };
+
+  const ActionBtn = ({ label, onClick, active }) => (
+    <button onClick={onClick} style={{
+      padding: "0.45rem 0.85rem", borderRadius: "6px",
+      fontSize: "0.75rem", fontWeight: 500,
+      border: active ? "1px solid rgba(79,142,247,0.35)" : "1px solid #2a2a34",
+      background: active ? "rgba(79,142,247,0.1)" : "#16161a",
+      color: active ? "#4f8ef7" : "#9090a8",
+      transition: "all 0.15s",
+    }}>{label}</button>
+  );
 
   return (
     <>
@@ -395,7 +770,7 @@ export default function App() {
         button { cursor: pointer; font-family: inherit; }
       `}</style>
 
-      <div style={{ minHeight: "100vh", padding: "2rem 1.5rem", maxWidth: "1160px", margin: "0 auto" }}>
+      <div style={{ minHeight: "100vh", padding: "2rem 1.5rem", maxWidth: "1200px", margin: "0 auto" }}>
 
         {/* HEADER */}
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "1rem", marginBottom: "2rem", paddingBottom: "1.5rem", borderBottom: "1px solid #1a1a22", flexWrap: "wrap" }}>
@@ -404,20 +779,8 @@ export default function App() {
             <div style={{ fontFamily: "'Instrument Serif', serif", fontSize: "1.5rem", fontStyle: "italic", color: "#f0f0f4", letterSpacing: "-0.01em" }}>Card Processing Economics</div>
           </div>
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginTop: "0.25rem" }}>
-            {[
-              { label: showChart ? "Hide Chart" : "Sensitivity Chart", onClick: () => setShowChart(v => !v), active: showChart },
-              { label: exported ? "Exported ✓" : "Export Results", onClick: handleExport, active: exported },
-            ].map(({ label, onClick, active }) => (
-              <button key={label} onClick={onClick} style={{
-                display: "inline-flex", alignItems: "center", gap: "0.4rem",
-                padding: "0.45rem 0.85rem", borderRadius: "6px",
-                fontSize: "0.75rem", fontWeight: 500,
-                border: active ? "1px solid rgba(79,142,247,0.35)" : "1px solid #2a2a34",
-                background: active ? "rgba(79,142,247,0.1)" : "#16161a",
-                color: active ? "#4f8ef7" : "#9090a8",
-                transition: "all 0.15s",
-              }}>{label}</button>
-            ))}
+            <ActionBtn label={showChart ? "Hide Chart" : "Sensitivity Chart"} onClick={() => setShowChart(v => !v)} active={showChart} />
+            <ActionBtn label={exported ? "Exported ✓" : "Export Results"} onClick={handleExport} active={exported} />
           </div>
         </div>
 
@@ -439,69 +802,62 @@ export default function App() {
           ))}
         </div>
 
-        {/* LAYOUT */}
+        {/* TWO-COLUMN LAYOUT */}
         <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: "1.25rem", alignItems: "start" }}>
 
-          {/* LEFT PANEL */}
+          {/* LEFT — inputs */}
           <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
-
-            {/* INPUTS */}
-            <div style={{ background: "#16161a", border: "1px solid #1e1e28", borderRadius: "8px", padding: "1.25rem" }}>
-              <div style={{ fontSize: "0.68rem", fontWeight: 500, letterSpacing: "0.08em", textTransform: "uppercase", color: "#55556a", marginBottom: "1.25rem", paddingBottom: "0.75rem", borderBottom: "1px solid #1e1e28" }}>
-                Merchant Profile
-              </div>
+            <Panel>
+              <SectionHeader label="Merchant Profile" />
               <NumberInput label="Monthly Volume" value={inputs.monthlyVolume} onChange={set("monthlyVolume")} tooltip={TOOLTIPS.monthlyVolume} />
               <NumberInput label="Avg Transaction" value={inputs.avgTransaction} onChange={set("avgTransaction")} tooltip={TOOLTIPS.avgTransaction} />
               <SliderInput label="Credit Card Mix" value={inputs.pctCredit} min={0} max={1} step={0.01} onChange={set("pctCredit")} format={v => `${Math.round(v * 100)}% credit`} tooltip={TOOLTIPS.pctCredit} sublabel={`${Math.round(inputs.pctCredit * 100)}% credit · ${Math.round((1 - inputs.pctCredit) * 100)}% debit`} />
               <SliderInput label="International Mix" value={inputs.pctInternational} min={0} max={0.5} step={0.01} onChange={set("pctInternational")} format={v => fmtPct(v)} tooltip={TOOLTIPS.pctInternational} />
-            </div>
+            </Panel>
 
-            {/* COST SUMMARY */}
-            <div style={{ background: "#16161a", border: "1px solid #1e1e28", borderRadius: "8px", padding: "1.25rem" }}>
-              <div style={{ fontSize: "0.68rem", fontWeight: 500, letterSpacing: "0.08em", textTransform: "uppercase", color: "#55556a", marginBottom: "1rem", paddingBottom: "0.75rem", borderBottom: "1px solid #1e1e28" }}>
-                Cost Summary
-              </div>
+            <Panel>
+              <SectionHeader label="Cost Summary" />
               {[
                 ["Blended Cost Rate", <AnimatedNumber value={bc} format={fmtPct} />],
-                ["Monthly Cost ($)", <AnimatedNumber value={inputs.monthlyVolume * bc} format={fmt$} />],
+                ["Monthly Cost",      <AnimatedNumber value={inputs.monthlyVolume * bc} format={fmt$} />],
                 ["Transactions / Mo", Math.round(inputs.monthlyVolume / inputs.avgTransaction).toLocaleString()],
                 ["Debit Interchange", fmtPct(COSTS.debitInterchange)],
-                ["Credit Interchange", fmtPct(COSTS.creditInterchange)],
+                ["Credit Interchange",fmtPct(COSTS.creditInterchange)],
               ].map(([k, v]) => (
                 <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.5rem 0", borderBottom: "1px solid #1a1a22", fontSize: "0.78rem" }}>
                   <span style={{ color: "#9090a8" }}>{k}</span>
                   <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontWeight: 500, color: "#f0f0f4" }}>{v}</span>
                 </div>
               ))}
-            </div>
+            </Panel>
           </div>
 
-          {/* RIGHT PANEL */}
+          {/* RIGHT — outputs */}
           <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
 
             {/* RECOMMENDATION */}
-            <div style={{ background: "#16161a", border: "1px solid #2a2a38", borderRadius: "8px", padding: "1.25rem 1.5rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem" }}>
-              <div>
-                <div style={{ fontSize: "0.68rem", fontWeight: 500, letterSpacing: "0.08em", textTransform: "uppercase", color: "#55556a", marginBottom: "0.3rem" }}>Recommended Model</div>
-                <div style={{ fontFamily: "'Instrument Serif', serif", fontSize: "1.75rem", fontStyle: "italic", color: "#f0f0f4", letterSpacing: "-0.01em" }}>{MODEL_META[rec].label}</div>
-                <div style={{ fontSize: "0.72rem", color: "#55556a", marginTop: "0.2rem" }}>{MODEL_META[rec].desc}</div>
-              </div>
-              <div style={{ textAlign: "right" }}>
-                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "1.5rem", fontWeight: 500, color: "#f0f0f4" }}>
-                  <AnimatedNumber value={results[rec].marginPct} format={fmtPct} />
+            <Panel>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem" }}>
+                <div>
+                  <div style={{ fontSize: "0.68rem", fontWeight: 500, letterSpacing: "0.08em", textTransform: "uppercase", color: "#55556a", marginBottom: "0.3rem" }}>Recommended Model</div>
+                  <div style={{ fontFamily: "'Instrument Serif', serif", fontSize: "1.75rem", fontStyle: "italic", color: "#f0f0f4", letterSpacing: "-0.01em" }}>{MODEL_META[rec].label}</div>
+                  <div style={{ fontSize: "0.72rem", color: "#55556a", marginTop: "0.2rem" }}>{MODEL_META[rec].desc}</div>
                 </div>
-                <div style={{ fontSize: "0.68rem", color: "#55556a", marginBottom: "0.2rem" }}>margin rate</div>
-                <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.85rem", color: "#34c98a" }}>
-                  <AnimatedNumber value={results[rec].margin} format={fmt$} /> /mo
+                <div style={{ textAlign: "right", flexShrink: 0 }}>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "1.5rem", fontWeight: 500, color: "#f0f0f4" }}>
+                    <AnimatedNumber value={results[rec].marginPct} format={fmtPct} />
+                  </div>
+                  <div style={{ fontSize: "0.68rem", color: "#55556a", marginBottom: "0.2rem" }}>margin rate</div>
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.85rem", color: "#34c98a" }}>
+                    <AnimatedNumber value={results[rec].margin} format={fmt$} /> /mo
+                  </div>
                 </div>
               </div>
-            </div>
+            </Panel>
 
-            {/* MODEL TABLE */}
-            <div style={{ background: "#16161a", border: "1px solid #1e1e28", borderRadius: "8px", padding: "1.25rem" }}>
-              <div style={{ fontSize: "0.68rem", fontWeight: 500, letterSpacing: "0.08em", textTransform: "uppercase", color: "#55556a", marginBottom: "1rem", paddingBottom: "0.75rem", borderBottom: "1px solid #1e1e28" }}>
-                Model Comparison
-              </div>
+            {/* MODEL COMPARISON TABLE */}
+            <Panel>
+              <SectionHeader label="Model Comparison" />
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr>
@@ -511,14 +867,15 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody>
-                  {["Flat", "IC++", "Blended"].map(model => {
+                  {["Flat", "IC++", "Blended"].map((model, idx) => {
                     const r = results[model];
                     const isRec = model === rec;
                     const isPos = r.margin >= 0;
                     const barW = maxMargin > 0 ? Math.max(0, r.margin / maxMargin) * 100 : 0;
+                    const isLast = idx === 2;
                     return (
                       <tr key={model} style={{ background: isRec ? "rgba(255,255,255,0.02)" : "transparent" }}>
-                        <td style={{ padding: "0.9rem 0.75rem", borderBottom: "1px solid #1a1a22" }}>
+                        <td style={{ padding: "0.9rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22" }}>
                           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
                             <div style={{ width: 7, height: 7, borderRadius: "50%", background: MODEL_META[model].color, flexShrink: 0 }} />
                             <span style={{ fontSize: "0.8rem", fontWeight: 500, color: "#f0f0f4" }}>{MODEL_META[model].label}</span>
@@ -526,15 +883,15 @@ export default function App() {
                           </div>
                         </td>
                         {[fmt$(r.revenue), fmt$(r.cost)].map((val, i) => (
-                          <td key={i} style={{ padding: "0.9rem 0.75rem", borderBottom: "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.82rem", color: "#9090a8" }}>{val}</td>
+                          <td key={i} style={{ padding: "0.9rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.82rem", color: "#9090a8" }}>{val}</td>
                         ))}
-                        <td style={{ padding: "0.9rem 0.75rem", borderBottom: "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.82rem", color: isPos ? "#34c98a" : "#f25f5c" }}>
+                        <td style={{ padding: "0.9rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.82rem", color: isPos ? "#34c98a" : "#f25f5c" }}>
                           <div><AnimatedNumber value={r.margin} format={fmt$} /></div>
                           <div style={{ width: "100%", height: "2px", background: "#1e1e2a", borderRadius: "2px", marginTop: "5px" }}>
                             <div style={{ width: `${barW}%`, height: "100%", background: MODEL_META[model].color, borderRadius: "2px", transition: "width 0.4s ease" }} />
                           </div>
                         </td>
-                        <td style={{ padding: "0.9rem 0.75rem", borderBottom: "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.82rem", color: isPos ? "#34c98a" : "#f25f5c" }}>
+                        <td style={{ padding: "0.9rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.82rem", color: isPos ? "#34c98a" : "#f25f5c" }}>
                           <AnimatedNumber value={r.marginPct} format={fmtPct} />
                         </td>
                       </tr>
@@ -542,31 +899,42 @@ export default function App() {
                   })}
                 </tbody>
               </table>
-            </div>
+            </Panel>
 
             {/* SENSITIVITY CHART */}
             {showChart && (
-              <div style={{ background: "#16161a", border: "1px solid #1e1e28", borderRadius: "8px", padding: "1.25rem" }}>
-                <div style={{ fontSize: "0.68rem", fontWeight: 500, letterSpacing: "0.08em", textTransform: "uppercase", color: "#55556a", marginBottom: "1rem", paddingBottom: "0.75rem", borderBottom: "1px solid #1e1e28" }}>
-                  Sensitivity Analysis — Margin % vs Credit Mix
-                </div>
+              <Panel>
+                <SectionHeader label="Sensitivity Analysis — Margin % vs Credit Mix" />
                 <SensitivityChart inputs={inputs} />
-              </div>
+              </Panel>
             )}
 
-            {/* INSIGHTS */}
-            <div style={{ background: "#16161a", border: "1px solid #1e1e28", borderRadius: "8px", padding: "1.25rem" }}>
-              <div style={{ fontSize: "0.68rem", fontWeight: 500, letterSpacing: "0.08em", textTransform: "uppercase", color: "#55556a", marginBottom: "1rem", paddingBottom: "0.75rem", borderBottom: "1px solid #1e1e28", display: "flex", justifyContent: "space-between" }}>
-                <span>Analysis</span>
-                <span style={{ textTransform: "none", letterSpacing: 0, fontWeight: 400 }}>{insights.length} insight{insights.length !== 1 ? "s" : ""}</span>
-              </div>
-              {insights.map((text, i) => (
-                <div key={i} style={{ display: "flex", gap: "0.75rem", alignItems: "flex-start", padding: "0.75rem 0", borderBottom: i < insights.length - 1 ? "1px solid #1a1a22" : "none", fontSize: "0.8rem", lineHeight: 1.65, color: "#9090a8" }}>
-                  <span style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.65rem", color: "#55556a", marginTop: "0.2rem", flexShrink: 0, width: "18px" }}>0{i + 1}</span>
-                  <span>{text}</span>
+            {/* METHODOLOGY EXPLAINER */}
+            <MethodologyPanel inputs={inputs} results={results} rec={rec} />
+
+            {/* COMPETITIVE BENCHMARK */}
+            <CompetitiveBenchmark inputs={inputs} results={results} />
+
+            {/* ENRICHED INSIGHTS */}
+            <Panel>
+              <SectionHeader label="Analysis" right={`${insights.length} insight${insights.length !== 1 ? "s" : ""}`} />
+              {insights.map((ins, i) => (
+                <div key={i} style={{
+                  display: "flex", gap: "0.75rem", alignItems: "flex-start",
+                  padding: "0.75rem 0",
+                  borderBottom: i < insights.length - 1 ? "1px solid #1a1a22" : "none",
+                }}>
+                  <span style={{
+                    fontSize: "0.59rem", fontWeight: 700, fontFamily: "'IBM Plex Mono', monospace",
+                    letterSpacing: "0.06em", textTransform: "uppercase",
+                    background: "#1e1e28", color: "#55556a",
+                    padding: "2px 6px", borderRadius: "3px",
+                    flexShrink: 0, marginTop: "2px", whiteSpace: "nowrap",
+                  }}>{ins.tag}</span>
+                  <span style={{ fontSize: "0.8rem", lineHeight: 1.65, color: "#9090a8" }}>{ins.text}</span>
                 </div>
               ))}
-            </div>
+            </Panel>
 
           </div>
         </div>
