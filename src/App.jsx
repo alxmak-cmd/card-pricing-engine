@@ -28,8 +28,11 @@ function flatRevenue(inputs) {
   return inputs.monthlyVolume * PRICING.flatRate + txCount * PRICING.flatFixed;
 }
 
+// FIX 1: IC++ revenue = interchange passthrough + markup (full merchant payment)
+// Margin = markup only. Previously only counted markup, causing false negative margins.
 function icppRevenue(inputs) {
-  return inputs.monthlyVolume * PRICING.icppMarkup;
+  const bc = computeBlendedCost(inputs);
+  return inputs.monthlyVolume * (bc + PRICING.icppMarkup);
 }
 
 function blendedRevenue(inputs) {
@@ -122,15 +125,10 @@ function buildSensitivityData(inputs) {
 
 // ── COMPETITIVE BENCHMARKS ────────────────────────────────────────────────────
 
-// What the MERCHANT pays — all-in processing cost to the merchant.
-// For IC++ processors: merchant pays interchange + markup + fixed fees.
-// For flat-rate processors: merchant pays the flat % + fixed fee.
-// Interchange is the same for all (same card mix) — this is apples-to-apples.
 const COMPETITORS = [
   {
     name: "Adyen",
     pricingModel: "IC++",
-    // Merchant pays: interchange (pass-through) + 0.40% markup + $0.13/tx
     markupPct: 0.004, fixedPerTx: 0.13,
     rateDisplay: "Interchange + 0.40% + $0.13/tx",
     note: "Requires volume commitment; negotiated",
@@ -138,7 +136,6 @@ const COMPETITORS = [
   {
     name: "Braintree",
     pricingModel: "Flat",
-    // Merchant pays: 3.49% flat, no fixed fee
     flatPct: 0.0349, fixedPerTx: 0.00,
     rateDisplay: "3.49% + $0.00/tx",
     note: "No fixed fee; higher % rate",
@@ -146,7 +143,6 @@ const COMPETITORS = [
   {
     name: "Square",
     pricingModel: "Flat",
-    // Merchant pays: 2.9% + $0.30/tx (online)
     flatPct: 0.029, fixedPerTx: 0.30,
     rateDisplay: "2.90% + $0.30/tx",
     note: "Online rate; in-person is 2.6%+$0.10",
@@ -154,25 +150,20 @@ const COMPETITORS = [
   {
     name: "Checkout.com",
     pricingModel: "IC++",
-    // Merchant pays: interchange + 0.60% markup, no fixed
     markupPct: 0.006, fixedPerTx: 0.00,
     rateDisplay: "Interchange + 0.60% + $0.00/tx",
     note: "Standard published rate; enterprise varies",
   },
 ];
 
-// What a merchant pays to a competitor — their all-in monthly cost
 function computeMerchantCost(comp, inputs, ic) {
   const txCount = inputs.monthlyVolume / inputs.avgTransaction;
   if (comp.pricingModel === "IC++") {
-    // Interchange (actual cost) + processor markup + fixed fees
     return inputs.monthlyVolume * ic + inputs.monthlyVolume * comp.markupPct + txCount * comp.fixedPerTx;
   }
-  // Flat rate — merchant pays the flat % + fixed, full stop
   return inputs.monthlyVolume * comp.flatPct + txCount * comp.fixedPerTx;
 }
 
-// What a merchant pays to Stripe under a given model
 function computeStripeMerchantCost(model, inputs) {
   const txCount = inputs.monthlyVolume / inputs.avgTransaction;
   if (model === "Flat")    return inputs.monthlyVolume * PRICING.flatRate + txCount * PRICING.flatFixed;
@@ -482,7 +473,7 @@ function MethodologyPanel({ inputs, results, rec }) {
   const creditLow = inputs.pctCredit < 0.6;
   const smallTicket = inputs.avgTransaction < 20;
 
-  let decisiveStep = 2; // default = blended
+  let decisiveStep = 2;
   if (vol1M && creditLow) decisiveStep = 0;
   else if (smallTicket) decisiveStep = 1;
 
@@ -519,7 +510,6 @@ function MethodologyPanel({ inputs, results, rec }) {
 
   return (
     <Panel>
-      {/* Clickable header */}
       <button
         onClick={() => setOpen(v => !v)}
         style={{
@@ -546,7 +536,6 @@ function MethodologyPanel({ inputs, results, rec }) {
         </div>
       </button>
 
-      {/* Collapsed state */}
       {!open && (
         <div style={{ fontSize: "0.78rem", color: "#55556a", lineHeight: 1.65, marginTop: "0.85rem" }}>
           A rules-based decision tree evaluates volume, credit mix, and ticket size to select the highest-margin model.{" "}
@@ -557,10 +546,8 @@ function MethodologyPanel({ inputs, results, rec }) {
         </div>
       )}
 
-      {/* Expanded state */}
       {open && (
         <div style={{ marginTop: "1rem" }}>
-          {/* Active recommendation callout */}
           <div style={{
             background: "#111116", border: "1px solid #2a2a38", borderRadius: "6px",
             padding: "0.75rem 1rem", marginBottom: "1.25rem",
@@ -573,7 +560,6 @@ function MethodologyPanel({ inputs, results, rec }) {
             </div>
           </div>
 
-          {/* Decision steps */}
           <div style={{ display: "flex", flexDirection: "column", gap: "0.85rem" }}>
             {steps.map((step, i) => {
               const isDecisive = i === decisiveStep;
@@ -614,7 +600,6 @@ function MethodologyPanel({ inputs, results, rec }) {
             })}
           </div>
 
-          {/* Cost constants reference */}
           <div style={{ marginTop: "1.25rem", paddingTop: "1rem", borderTop: "1px solid #1e1e28" }}>
             <div style={{ fontSize: "0.65rem", letterSpacing: "0.08em", textTransform: "uppercase", color: "#3a3a4a", marginBottom: "0.6rem" }}>
               Interchange constants used in all calculations
@@ -650,23 +635,18 @@ function MethodologyPanel({ inputs, results, rec }) {
 
 function CompetitiveBenchmark({ inputs, rec }) {
   const [selectedModel, setSelectedModel] = useState(rec);
-  const ic = computeBlendedCost(inputs); // true interchange cost, same for everyone
+  const ic = computeBlendedCost(inputs);
 
-  // Stripe: what the merchant pays under the selected model
   const stripeCost = computeStripeMerchantCost(selectedModel, inputs);
 
-  // Competitors: what the merchant pays under each processor's model
   const compRows = COMPETITORS.map(comp => {
     const merchantCost = computeMerchantCost(comp, inputs, ic);
-    const savings = merchantCost - stripeCost; // positive = merchant saves with Stripe
+    const savings = merchantCost - stripeCost;
     const savingsPct = merchantCost > 0 ? savings / merchantCost : 0;
     return { ...comp, merchantCost, savings, savingsPct };
   });
 
-  // Effective rate = total merchant cost / volume
   const stripeEffectiveRate = stripeCost / inputs.monthlyVolume;
-
-  // Max cost for bar scaling
   const allCosts = [stripeCost, ...compRows.map(r => r.merchantCost)];
   const maxCost = Math.max(...allCosts);
 
@@ -683,8 +663,6 @@ function CompetitiveBenchmark({ inputs, rec }) {
     }}>{children}</th>
   );
 
-  // Keep selectedModel in sync if rec changes (e.g. preset switch)
-  // but only if user hasn't manually changed it
   const prevRec = useRef(rec);
   useEffect(() => {
     if (rec !== prevRec.current) {
@@ -697,12 +675,10 @@ function CompetitiveBenchmark({ inputs, rec }) {
     <Panel>
       <SectionHeader label="Competitive Benchmark" right="merchant all-in cost · published 2025 rates" />
 
-      {/* Framing note + model selector */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem", marginBottom: "1.1rem", flexWrap: "wrap" }}>
         <div style={{ fontSize: "0.74rem", color: "#55556a", lineHeight: 1.65, maxWidth: "480px" }}>
           What this merchant pays all-in under each processor — interchange cost is identical across all rows since card mix is the same. Only the pricing model differs.
         </div>
-        {/* Model toggle */}
         <div style={{ display: "flex", gap: "0.35rem", flexShrink: 0 }}>
           {["Flat", "IC++", "Blended"].map(m => (
             <button
@@ -739,7 +715,6 @@ function CompetitiveBenchmark({ inputs, rec }) {
             </tr>
           </thead>
           <tbody>
-            {/* Stripe row — pinned first */}
             <tr style={{ background: "rgba(79,142,247,0.04)" }}>
               <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
@@ -774,9 +749,8 @@ function CompetitiveBenchmark({ inputs, rec }) {
               </td>
             </tr>
 
-            {/* Competitor rows */}
             {compRows.map((comp, i) => {
-              const merchantSaves = comp.savings > 0; // merchant saves money with Stripe
+              const merchantSaves = comp.savings > 0;
               const isLast = i === compRows.length - 1;
               const barW = maxCost > 0 ? (comp.merchantCost / maxCost) * 100 : 0;
               return (
@@ -949,7 +923,8 @@ export default function App() {
                     <AnimatedNumber value={results[rec].marginPct} format={fmtPct} />
                   </div>
                   <div style={{ fontSize: "0.68rem", color: "#55556a", marginBottom: "0.2rem" }}>margin rate</div>
-                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.85rem", color: "#34c98a" }}>
+                  {/* FIX 2: Dynamic color on margin — green if positive, red if negative */}
+                  <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.85rem", color: results[rec].margin >= 0 ? "#34c98a" : "#f25f5c" }}>
                     <AnimatedNumber value={results[rec].margin} format={fmt$} /> /mo
                   </div>
                 </div>
