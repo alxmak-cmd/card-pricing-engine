@@ -122,18 +122,63 @@ function buildSensitivityData(inputs) {
 
 // ── COMPETITIVE BENCHMARKS ────────────────────────────────────────────────────
 
-// Rates reflect published 2025 pricing for mid-market merchants
+// What the MERCHANT pays — all-in processing cost to the merchant.
+// For IC++ processors: merchant pays interchange + markup + fixed fees.
+// For flat-rate processors: merchant pays the flat % + fixed fee.
+// Interchange is the same for all (same card mix) — this is apples-to-apples.
 const COMPETITORS = [
-  { name: "Adyen",        model: "IC++", markup: 0.004, fixed: 0.13, note: "IC++ only; requires volume commitment" },
-  { name: "Braintree",    model: "Flat", rate: 0.0349,  fixed: 0.00, note: "No fixed fee; higher % rate" },
-  { name: "Square",       model: "Flat", rate: 0.029,   fixed: 0.30, note: "Online rate; card-present is 2.6%+$0.10" },
-  { name: "Checkout.com", model: "IC++", markup: 0.006, fixed: 0.00, note: "IC++ standard; negotiated for high vol" },
+  {
+    name: "Adyen",
+    pricingModel: "IC++",
+    // Merchant pays: interchange (pass-through) + 0.40% markup + $0.13/tx
+    markupPct: 0.004, fixedPerTx: 0.13,
+    rateDisplay: "Interchange + 0.40% + $0.13/tx",
+    note: "Requires volume commitment; negotiated",
+  },
+  {
+    name: "Braintree",
+    pricingModel: "Flat",
+    // Merchant pays: 3.49% flat, no fixed fee
+    flatPct: 0.0349, fixedPerTx: 0.00,
+    rateDisplay: "3.49% + $0.00/tx",
+    note: "No fixed fee; higher % rate",
+  },
+  {
+    name: "Square",
+    pricingModel: "Flat",
+    // Merchant pays: 2.9% + $0.30/tx (online)
+    flatPct: 0.029, fixedPerTx: 0.30,
+    rateDisplay: "2.90% + $0.30/tx",
+    note: "Online rate; in-person is 2.6%+$0.10",
+  },
+  {
+    name: "Checkout.com",
+    pricingModel: "IC++",
+    // Merchant pays: interchange + 0.60% markup, no fixed
+    markupPct: 0.006, fixedPerTx: 0.00,
+    rateDisplay: "Interchange + 0.60% + $0.00/tx",
+    note: "Standard published rate; enterprise varies",
+  },
 ];
 
-function computeCompetitorRevenue(comp, inputs) {
+// What a merchant pays to a competitor — their all-in monthly cost
+function computeMerchantCost(comp, inputs, ic) {
   const txCount = inputs.monthlyVolume / inputs.avgTransaction;
-  if (comp.model === "IC++") return inputs.monthlyVolume * comp.markup + txCount * (comp.fixed || 0);
-  return inputs.monthlyVolume * comp.rate + txCount * comp.fixed;
+  if (comp.pricingModel === "IC++") {
+    // Interchange (actual cost) + processor markup + fixed fees
+    return inputs.monthlyVolume * ic + inputs.monthlyVolume * comp.markupPct + txCount * comp.fixedPerTx;
+  }
+  // Flat rate — merchant pays the flat % + fixed, full stop
+  return inputs.monthlyVolume * comp.flatPct + txCount * comp.fixedPerTx;
+}
+
+// What a merchant pays to Stripe under a given model
+function computeStripeMerchantCost(model, inputs) {
+  const txCount = inputs.monthlyVolume / inputs.avgTransaction;
+  if (model === "Flat")    return inputs.monthlyVolume * PRICING.flatRate + txCount * PRICING.flatFixed;
+  if (model === "IC++")    return inputs.monthlyVolume * (computeBlendedCost(inputs) + PRICING.icppMarkup);
+  if (model === "Blended") return inputs.monthlyVolume * PRICING.blendedRate + txCount * PRICING.blendedFixed;
+  return 0;
 }
 
 // ── PRESETS ───────────────────────────────────────────────────────────────────
@@ -603,33 +648,31 @@ function MethodologyPanel({ inputs, results, rec }) {
 
 // ── COMPETITIVE BENCHMARK ─────────────────────────────────────────────────────
 
-function CompetitiveBenchmark({ inputs, results }) {
-  const bc = computeBlendedCost(inputs);
+function CompetitiveBenchmark({ inputs, rec }) {
+  const [selectedModel, setSelectedModel] = useState(rec);
+  const ic = computeBlendedCost(inputs); // true interchange cost, same for everyone
 
-  // Find our engine's best margin and which model achieves it
-  const ourBestMargin = Math.max(...Object.values(results).map(r => r.margin));
-  const ourBestModel = Object.keys(results).find(k => results[k].margin === ourBestMargin);
-  const ourRevenue = results[ourBestModel].revenue;
+  // Stripe: what the merchant pays under the selected model
+  const stripeCost = computeStripeMerchantCost(selectedModel, inputs);
 
-  // Build competitor rows
+  // Competitors: what the merchant pays under each processor's model
   const compRows = COMPETITORS.map(comp => {
-    const revenue = computeCompetitorRevenue(comp, inputs);
-    const cost = inputs.monthlyVolume * bc;
-    const margin = revenue - cost;
-    const marginPct = revenue > 0 ? margin / revenue : 0;
-    return { ...comp, revenue, cost, margin, marginPct };
+    const merchantCost = computeMerchantCost(comp, inputs, ic);
+    const savings = merchantCost - stripeCost; // positive = merchant saves with Stripe
+    const savingsPct = merchantCost > 0 ? savings / merchantCost : 0;
+    return { ...comp, merchantCost, savings, savingsPct };
   });
 
-  const allMargins = [ourBestMargin, ...compRows.map(r => r.margin)];
-  const maxMargin = Math.max(...allMargins.filter(m => m > 0));
+  // Effective rate = total merchant cost / volume
+  const stripeEffectiveRate = stripeCost / inputs.monthlyVolume;
 
-  const rateStr = (comp) => comp.model === "IC++"
-    ? `IC++ ${(comp.markup * 100).toFixed(2)}%${comp.fixed ? ` + $${comp.fixed.toFixed(2)}` : ""}`
-    : `${(comp.rate * 100).toFixed(2)}% + $${comp.fixed.toFixed(2)}`;
+  // Max cost for bar scaling
+  const allCosts = [stripeCost, ...compRows.map(r => r.merchantCost)];
+  const maxCost = Math.max(...allCosts);
 
-  const ourRateStr = ourBestModel === "IC++" ? "IC++ 0.50%"
-    : ourBestModel === "Flat" ? "2.90% + $0.30"
-    : "2.50% + $0.25";
+  const stripeRateDisplay = selectedModel === "Flat" ? "2.90% + $0.30/tx"
+    : selectedModel === "IC++" ? "Interchange + 0.50% markup"
+    : "2.50% + $0.25/tx";
 
   const ColHeader = ({ children }) => (
     <th style={{
@@ -640,11 +683,47 @@ function CompetitiveBenchmark({ inputs, results }) {
     }}>{children}</th>
   );
 
+  // Keep selectedModel in sync if rec changes (e.g. preset switch)
+  // but only if user hasn't manually changed it
+  const prevRec = useRef(rec);
+  useEffect(() => {
+    if (rec !== prevRec.current) {
+      setSelectedModel(rec);
+      prevRec.current = rec;
+    }
+  }, [rec]);
+
   return (
     <Panel>
-      <SectionHeader label="Competitive Benchmark" right="same merchant profile · published 2025 rates" />
-      <div style={{ fontSize: "0.74rem", color: "#55556a", marginBottom: "1rem", lineHeight: 1.65 }}>
-        How major processors compare at this volume and card mix. All rows use identical blended cost ({fmtPct(bc)}) — only the revenue model differs.
+      <SectionHeader label="Competitive Benchmark" right="merchant all-in cost · published 2025 rates" />
+
+      {/* Framing note + model selector */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem", marginBottom: "1.1rem", flexWrap: "wrap" }}>
+        <div style={{ fontSize: "0.74rem", color: "#55556a", lineHeight: 1.65, maxWidth: "480px" }}>
+          What this merchant pays all-in under each processor — interchange cost is identical across all rows since card mix is the same. Only the pricing model differs.
+        </div>
+        {/* Model toggle */}
+        <div style={{ display: "flex", gap: "0.35rem", flexShrink: 0 }}>
+          {["Flat", "IC++", "Blended"].map(m => (
+            <button
+              key={m}
+              onClick={() => setSelectedModel(m)}
+              style={{
+                padding: "0.3rem 0.7rem", borderRadius: "5px", fontSize: "0.72rem",
+                fontWeight: 500, border: "1px solid",
+                borderColor: selectedModel === m ? MODEL_META[m].color + "60" : "#2a2a34",
+                background: selectedModel === m ? MODEL_META[m].color + "14" : "transparent",
+                color: selectedModel === m ? MODEL_META[m].color : "#55556a",
+                transition: "all 0.15s", cursor: "pointer",
+                display: "flex", alignItems: "center", gap: "5px",
+              }}
+            >
+              <div style={{ width: 5, height: 5, borderRadius: "50%", background: selectedModel === m ? MODEL_META[m].color : "#3a3a4a" }} />
+              {MODEL_META[m].label}
+              {m === rec && <span style={{ fontSize: "0.58rem", opacity: 0.7 }}>★</span>}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div style={{ overflowX: "auto" }}>
@@ -652,63 +731,84 @@ function CompetitiveBenchmark({ inputs, results }) {
           <thead>
             <tr>
               <ColHeader>Processor</ColHeader>
-              <ColHeader>Model</ColHeader>
+              <ColHeader>Pricing model</ColHeader>
               <ColHeader>Rate structure</ColHeader>
-              <ColHeader>Revenue</ColHeader>
-              <ColHeader>Margin</ColHeader>
-              <ColHeader>Margin %</ColHeader>
+              <ColHeader>Merchant pays/mo</ColHeader>
+              <ColHeader>Effective rate</ColHeader>
+              <ColHeader>vs. Stripe</ColHeader>
             </tr>
           </thead>
           <tbody>
-            {/* Engine row — always first */}
+            {/* Stripe row — pinned first */}
             <tr style={{ background: "rgba(79,142,247,0.04)" }}>
               <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                  <div style={{ width: 7, height: 7, borderRadius: "50%", background: MODEL_META[ourBestModel].color, flexShrink: 0 }} />
-                  <span style={{ fontWeight: 600, color: "#f0f0f4", whiteSpace: "nowrap" }}>This engine</span>
-                  <span style={{
-                    fontSize: "0.58rem", background: "rgba(79,142,247,0.12)", color: "#4f8ef7",
-                    border: "1px solid rgba(79,142,247,0.25)", padding: "1px 5px",
-                    borderRadius: "3px", fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase",
-                  }}>optimal</span>
+                  <div style={{ width: 7, height: 7, borderRadius: "50%", background: MODEL_META[selectedModel].color, flexShrink: 0 }} />
+                  <span style={{ fontWeight: 600, color: "#f0f0f4" }}>Stripe</span>
+                  {selectedModel === rec && (
+                    <span style={{
+                      fontSize: "0.58rem", background: "rgba(79,142,247,0.12)", color: "#4f8ef7",
+                      border: "1px solid rgba(79,142,247,0.25)", padding: "1px 5px",
+                      borderRadius: "3px", fontWeight: 700, letterSpacing: "0.05em", textTransform: "uppercase",
+                    }}>recommended</span>
+                  )}
                 </div>
               </td>
-              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22", color: "#9090a8" }}>{MODEL_META[ourBestModel].label}</td>
-              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.71rem", color: "#55556a" }}>{ourRateStr}</td>
-              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: "#9090a8" }}>{fmt$(ourRevenue)}</td>
-              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: "#34c98a" }}>
-                <div>{fmt$(ourBestMargin)}</div>
-                <div style={{ width: "72px", height: "2px", background: "#1e1e2a", borderRadius: "2px", marginTop: "5px" }}>
-                  <div style={{ width: `${maxMargin > 0 ? (ourBestMargin / maxMargin) * 100 : 0}%`, height: "100%", background: "#34c98a", borderRadius: "2px" }} />
+              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22", color: MODEL_META[selectedModel].color, fontWeight: 500 }}>
+                {MODEL_META[selectedModel].label}
+              </td>
+              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.71rem", color: "#55556a" }}>
+                {stripeRateDisplay}
+              </td>
+              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", fontWeight: 500, color: "#f0f0f4" }}>
+                <div>{fmt$(stripeCost)}</div>
+                <div style={{ width: "80px", height: "2px", background: "#1e1e2a", borderRadius: "2px", marginTop: "5px" }}>
+                  <div style={{ width: `${maxCost > 0 ? (stripeCost / maxCost) * 100 : 0}%`, height: "100%", background: MODEL_META[selectedModel].color, borderRadius: "2px" }} />
                 </div>
               </td>
-              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: "#34c98a" }}>
-                {fmtPct(ourBestMargin / ourRevenue)}
+              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: "#9090a8" }}>
+                {fmtPct(stripeEffectiveRate)}
+              </td>
+              <td style={{ padding: "0.85rem 0.75rem", borderBottom: "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: "#55556a", fontSize: "0.72rem" }}>
+                —
               </td>
             </tr>
 
             {/* Competitor rows */}
             {compRows.map((comp, i) => {
-              const isPos = comp.margin >= 0;
-              const barW = maxMargin > 0 ? Math.max(0, comp.margin / maxMargin) * 100 : 0;
+              const merchantSaves = comp.savings > 0; // merchant saves money with Stripe
               const isLast = i === compRows.length - 1;
+              const barW = maxCost > 0 ? (comp.merchantCost / maxCost) * 100 : 0;
               return (
                 <tr key={comp.name}>
                   <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22" }}>
                     <div style={{ fontWeight: 500, color: "#f0f0f4" }}>{comp.name}</div>
-                    <div style={{ fontSize: "0.67rem", color: "#3a3a4a", marginTop: "2px" }}>{comp.note}</div>
+                    <div style={{ fontSize: "0.66rem", color: "#3a3a4a", marginTop: "2px" }}>{comp.note}</div>
                   </td>
-                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", color: "#9090a8" }}>{comp.model}</td>
-                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.71rem", color: "#55556a" }}>{rateStr(comp)}</td>
-                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: "#9090a8" }}>{fmt$(comp.revenue)}</td>
-                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: isPos ? "#9090a8" : "#f25f5c" }}>
-                    <div>{fmt$(comp.margin)}</div>
-                    <div style={{ width: "72px", height: "2px", background: "#1e1e2a", borderRadius: "2px", marginTop: "5px" }}>
+                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", color: "#9090a8" }}>
+                    {comp.pricingModel}
+                  </td>
+                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.71rem", color: "#55556a" }}>
+                    {comp.rateDisplay}
+                  </td>
+                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: "#9090a8" }}>
+                    <div>{fmt$(comp.merchantCost)}</div>
+                    <div style={{ width: "80px", height: "2px", background: "#1e1e2a", borderRadius: "2px", marginTop: "5px" }}>
                       <div style={{ width: `${barW}%`, height: "100%", background: "#2a2a3a", borderRadius: "2px" }} />
                     </div>
                   </td>
-                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: isPos ? "#9090a8" : "#f25f5c" }}>
-                    {fmtPct(comp.marginPct)}
+                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", color: "#9090a8" }}>
+                    {fmtPct(comp.merchantCost / inputs.monthlyVolume)}
+                  </td>
+                  <td style={{ padding: "0.85rem 0.75rem", borderBottom: isLast ? "none" : "1px solid #1a1a22", fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.8rem" }}>
+                    {merchantSaves ? (
+                      <span style={{ color: "#34c98a" }}>−{fmt$(comp.savings)}</span>
+                    ) : (
+                      <span style={{ color: "#f25f5c" }}>+{fmt$(Math.abs(comp.savings))}</span>
+                    )}
+                    <div style={{ fontSize: "0.67rem", color: merchantSaves ? "#34c98a" : "#f25f5c", opacity: 0.7, marginTop: "1px" }}>
+                      {merchantSaves ? "cheaper w/ Stripe" : "pricier w/ Stripe"}
+                    </div>
                   </td>
                 </tr>
               );
@@ -716,8 +816,9 @@ function CompetitiveBenchmark({ inputs, results }) {
           </tbody>
         </table>
       </div>
+
       <div style={{ marginTop: "0.85rem", paddingTop: "0.75rem", borderTop: "1px solid #1a1a22", fontSize: "0.67rem", color: "#3a3a4a", lineHeight: 1.6 }}>
-        Published pricing as of 2025. Adyen and Checkout.com require volume minimums; enterprise negotiated rates will differ.
+        ★ = engine recommendation. All-in cost includes interchange pass-through for IC++ processors. Published rates as of 2025; enterprise and negotiated pricing will differ.
       </div>
     </Panel>
   );
@@ -913,7 +1014,7 @@ export default function App() {
             <MethodologyPanel inputs={inputs} results={results} rec={rec} />
 
             {/* COMPETITIVE BENCHMARK */}
-            <CompetitiveBenchmark inputs={inputs} results={results} />
+            <CompetitiveBenchmark inputs={inputs} rec={rec} />
 
             {/* ENRICHED INSIGHTS */}
             <Panel>
