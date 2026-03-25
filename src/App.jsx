@@ -801,6 +801,120 @@ function CompetitiveBenchmark({ inputs, rec }) {
     </Panel>
   );
 }
+// ── ABOUT THIS MODEL ──────────────────────────────────────────────────────────
+// Paste this component anywhere after the MethodologyPanel component definition
+// and before the main App() export.
+
+function AboutThisModel() {
+  const [open, setOpen] = useState(false);
+
+  const Section = ({ title, items }) => (
+    <div style={{ marginBottom: "1.25rem" }}>
+      <div style={{
+        fontSize: "0.67rem", fontWeight: 600, letterSpacing: "0.08em",
+        textTransform: "uppercase", color: "#55556a", marginBottom: "0.6rem",
+      }}>{title}</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+        {items.map((item, i) => (
+          <div key={i} style={{ display: "flex", gap: "0.75rem", alignItems: "flex-start" }}>
+            <span style={{
+              width: "5px", height: "5px", borderRadius: "50%",
+              background: "#2a2a3a", flexShrink: 0, marginTop: "7px",
+            }} />
+            <span style={{ fontSize: "0.78rem", lineHeight: 1.65, color: "#9090a8" }}>
+              {item.label
+                ? <><span style={{ color: "#c0c0d8", fontWeight: 500 }}>{item.label}: </span>{item.text}</>
+                : item
+              }
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <Panel>
+      <button
+        onClick={() => setOpen(v => !v)}
+        style={{
+          width: "100%", background: "none", border: "none", padding: 0,
+          cursor: "pointer",
+        }}
+      >
+        <div style={{
+          fontSize: "0.68rem", fontWeight: 500, letterSpacing: "0.08em",
+          textTransform: "uppercase", color: "#55556a",
+          paddingBottom: "0.75rem", borderBottom: "1px solid #1e1e28",
+          width: "100%", textAlign: "left", display: "flex",
+          justifyContent: "space-between", alignItems: "center",
+        }}>
+          <span>About This Model</span>
+          <span style={{
+            fontFamily: "'IBM Plex Mono', monospace", fontSize: "0.75rem",
+            color: "#3a3a4a",
+            transform: open ? "rotate(180deg)" : "rotate(0deg)",
+            transition: "transform 0.2s", marginLeft: "8px", display: "inline-block",
+          }}>▾</span>
+        </div>
+      </button>
+
+      {!open && (
+        <div style={{ fontSize: "0.78rem", color: "#55556a", lineHeight: 1.65, marginTop: "0.85rem" }}>
+          A simplified illustration of a merchant-profile-aware pricing engine. Intentional assumptions and known limitations documented here.{" "}
+          <span
+            onClick={() => setOpen(true)}
+            style={{ color: "#4f8ef7", cursor: "pointer", textDecoration: "underline" }}
+          >Show details →</span>
+        </div>
+      )}
+
+      {open && (
+        <div style={{ marginTop: "1.1rem" }}>
+
+          <Section title="How costs are calculated" items={[
+            { label: "Interchange", text: "Two rates only — 0.80% for debit, 2.20% for credit. Real interchange has hundreds of categories by card type, MCC, rewards tier, and card-present vs. not-present." },
+            { label: "Network fees", text: "A flat 0.15% is added to every transaction regardless of card type. In practice these vary by network (Visa vs. Mastercard), transaction type, and volume tier." },
+            { label: "International uplift", text: "A flat 1.0% applied to cross-border volume. No distinction between regions, card networks, or currency corridors." },
+            { label: "IC++ margin", text: "Modeled as volume × 0.5% markup only. Stripe's margin on IC++ is always exactly the markup — interchange passes through to the networks in full." },
+          ]} />
+
+          <Section title="Pricing model assumptions" items={[
+            { label: "Flat Rate & Blended fixed fees", text: "Applied uniformly per transaction ($0.30 and $0.25 respectively). No minimum transaction size, volume discounts, or tiered fee structures." },
+            { label: "IC++ fixed fee", text: "Not modeled. Real IC++ pricing often includes a small per-transaction fee in addition to the markup percentage." },
+            { label: "Recommendation logic", text: "Three rules: IC++ if volume > $1M and credit mix < 60%; Flat Rate if avg transaction < $20; Blended otherwise. No MCC awareness, risk scoring, or account history." },
+          ]} />
+
+          <Section title="Competitive benchmark assumptions" items={[
+            { label: "Rates", text: "Published 2025 standard rates — not negotiated or enterprise pricing. Adyen and Checkout.com rates in particular are lower at volume commitments." },
+            { label: "Interchange cost", text: "Identical across all processors in the table — same card mix means same interchange cost regardless of who is processing. Only the pricing model markup differs." },
+            { label: "Fees excluded", text: "Monthly platform fees, setup fees, and chargeback fees are not included. Stripe, Adyen, and others charge these at enterprise scale." },
+          ]} />
+
+          <Section title="What this model does not include" items={[
+            "Chargebacks and dispute fees",
+            "Monthly or annual platform fees",
+            "Card-present vs. card-not-present rate differences",
+            "Premium card surcharges (Amex, Visa Infinite, high-tier rewards cards)",
+            "Volume-based interchange discounts",
+            "Currency conversion fees (separate from international uplift)",
+            "MCC-specific interchange categories (airlines, grocery, utilities, etc.)",
+          ]} />
+
+          <div style={{
+            marginTop: "1rem", paddingTop: "0.85rem",
+            borderTop: "1px solid #1e1e28",
+            fontSize: "0.72rem", color: "#3a3a4a", lineHeight: 1.65,
+          }}>
+            This engine is a simplified illustration of a rules-based pricing architecture — not a representation of how Stripe or any processor actually prices. Real systems use granular interchange tables, MCC-level logic, and merchant risk profiles. The value is in the decision framework, not the specific rates.
+          </div>
+
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 
 // ── MAIN APP ──────────────────────────────────────────────────────────────────
 
@@ -997,6 +1111,8 @@ export default function App() {
 
             {/* ENRICHED INSIGHTS */}
             <Panel>
+{/* ABOUT THIS MODEL */}
+            <AboutThisModel />
               <SectionHeader label="Analysis" right={`${insights.length} insight${insights.length !== 1 ? "s" : ""}`} />
               {insights.map((ins, i) => (
                 <div key={i} style={{
