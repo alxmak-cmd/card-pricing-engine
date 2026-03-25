@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from "react";
+import { track } from "@vercel/analytics";
+import { Analytics } from "@vercel/analytics/react";
 
 // ── PRICING ENGINE ────────────────────────────────────────────────────────────
 
@@ -515,7 +517,7 @@ function MethodologyPanel({ inputs, results, rec }) {
   return (
     <Panel>
       <button
-        onClick={() => setOpen(v => !v)}
+        onClick={() => { const next = !open; setOpen(next); if (next) track("panel_opened", { panel: "methodology" }); }}
         style={{
           width: "100%", background: "none", border: "none", padding: 0,
           display: "flex", justifyContent: "space-between", alignItems: "center",
@@ -687,7 +689,7 @@ function CompetitiveBenchmark({ inputs, rec }) {
           {["Flat", "IC++", "Blended"].map(m => (
             <button
               key={m}
-              onClick={() => setSelectedModel(m)}
+              onClick={() => { setSelectedModel(m); track("benchmark_model_selected", { model: m }); }}
               style={{
                 padding: "0.3rem 0.7rem", borderRadius: "5px", fontSize: "0.72rem",
                 fontWeight: 500, border: "1px solid",
@@ -836,7 +838,7 @@ function AboutThisModel() {
   return (
     <Panel>
       <button
-        onClick={() => setOpen(v => !v)}
+        onClick={() => { const next = !open; setOpen(next); if (next) track("panel_opened", { panel: "about_this_model" }); }}
         style={{
           width: "100%", background: "none", border: "none", padding: 0,
           cursor: "pointer",
@@ -972,7 +974,7 @@ export default function App() {
             <div style={{ fontFamily: "'Instrument Serif', serif", fontSize: "1.5rem", fontStyle: "italic", color: "#f0f0f4", letterSpacing: "-0.01em" }}>Card Processing Economics</div>
           </div>
           <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginTop: "0.25rem" }}>
-            <ActionBtn label={showChart ? "Hide Chart" : "Sensitivity Chart"} onClick={() => setShowChart(v => !v)} active={showChart} />
+            <ActionBtn label={showChart ? "Hide Chart" : "Sensitivity Chart"} onClick={() => { const next = !showChart; setShowChart(next); if (next) track("panel_opened", { panel: "sensitivity_chart" }); }} active={showChart} />
             <ActionBtn label={exported ? "Exported ✓" : "Export Results"} onClick={handleExport} active={exported} />
           </div>
         </div>
@@ -980,7 +982,7 @@ export default function App() {
         {/* PRESETS */}
         <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "1.5rem" }}>
           {Object.keys(PRESETS).map(p => (
-            <button key={p} onClick={() => { setInputs(PRESETS[p]); setActivePreset(p); }} style={{
+            <button key={p} onClick={() => { setInputs(PRESETS[p]); setActivePreset(p); track("preset_selected", { preset: p }); }} style={{
               display: "flex", flexDirection: "column", gap: "2px",
               padding: "0.6rem 1rem", borderRadius: "8px",
               border: activePreset === p ? "1px solid rgba(79,142,247,0.4)" : "1px solid #1e1e28",
@@ -1136,6 +1138,7 @@ export default function App() {
           </div>
         </div>
       </div>
+      <Analytics />
     </>
   );
 }
