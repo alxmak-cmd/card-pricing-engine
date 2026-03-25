@@ -1111,8 +1111,6 @@ export default function App() {
 
             {/* ENRICHED INSIGHTS */}
             <Panel>
-{/* ABOUT THIS MODEL */}
-            <AboutThisModel />
               <SectionHeader label="Analysis" right={`${insights.length} insight${insights.length !== 1 ? "s" : ""}`} />
               {insights.map((ins, i) => (
                 <div key={i} style={{
@@ -1131,6 +1129,9 @@ export default function App() {
                 </div>
               ))}
             </Panel>
+
+{/* ABOUT THIS MODEL */}
+            <AboutThisModel />
 
           </div>
         </div>
